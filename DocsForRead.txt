@@ -1,0 +1,18 @@
+https://grafana.com/docs/learning-journeys/?plcmt=learn-nav
+
+https://grafana.com/tutorials/?plcmt=learn-nav
+
+https://grafana.com/docs/grafana/latest/
+
+https://grafana.com/docs/?plcmt=learn-nav
+
+
+Considere conectar-se a uma fonte de dados de métricas autogerenciada quando:
+
+O custo de envio de dados métricos para o Grafana Cloud é muito alto.
+Os requisitos de conformidade impedem o armazenamento de dados fora das instalações.
+Você precisa de configurações personalizadas, como suporte para recursos alfa do Prometheus.
+Suas necessidades de retenção excedem o limite de 13 meses.
+Sua equipe deseja gerenciar o ambiente de métricas internamente.
+As métricas já estão armazenadas e gerenciadas em outra plataforma, como o Amazon Managed Prometheus ou o Google Cloud Platform Managed Prometheus.
+Você prefere continuar usando suas fontes de dados de métricas existentes que não são do Prometheus, pois não deseja migrar para o Prometheus ou Mimir e aprender PromQL.
