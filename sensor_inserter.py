@@ -16,8 +16,8 @@ import time
 import random
 import logging
 import signal
-import sys
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import datetime
+from typing import Dict, Tuple, Optional
 
 import mysql.connector
 from mysql.connector import Error
@@ -27,13 +27,13 @@ DB_CONFIG = {
     "host": "localhost",
     "user": "root",
     "password": "",
-    "database": "graphtest",
+    "database": "soil_sensors",
     "port": 3306,
 }
 
-SLEEP_SECONDS = 4  # intervalo entre inserts
-RANDOM_PROBABILITY = 0.3  # probabilidade de gerar leitura totalmente aleatória (0..1)
-SENSOR_IDS = ["sensor_1"]  # ids possíveis dos sensores (escolhidos aleatoriamente)
+SENSOR_NAMES = ["Sensor-01"]  # lista de sensores
+INTERVAL_SECONDS = 4  # intervalo entre inserts
+RANDOM_PROBABILITY = 0.25  # probabilidade de gerar leitura totalmente aleatória
 # ==================================================
 
 logging.basicConfig(
@@ -45,17 +45,8 @@ logging.basicConfig(
 stop_requested = False
 
 
-def decimal_round(value, ndigits=2):
-    """
-    Arredonda um float para Decimal com ndigits casas decimais, retornando Decimal.
-    Isso ajuda a manter conformidade com NUMERIC(5,2) / NUMERIC(3,2).
-    """
-    q = Decimal(10) ** -ndigits
-    return Decimal(value).quantize(q, rounding=ROUND_HALF_UP)
-
-
 def connect_db():
-    """Tenta conectar ao banco e retorna uma conexão."""
+    """Tenta conectar ao MySQL e retorna a conexão (ou None em falha)."""
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
         if conn.is_connected():
@@ -66,71 +57,138 @@ def connect_db():
     return None
 
 
+def now_str():
+    """Timestamp formatado para inserção (YYYY-MM-DD HH:MM:SS)."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def generate_random_reading():
-    """Gera uma leitura totalmente aleatória dentro de intervalos plausíveis."""
-    umidade = round(random.uniform(0, 100), 2)  # % de umidade
-    temperatura = decimal_round(random.uniform(-10.0, 50.0), 2)  # °C (Decimal)
-    ph = decimal_round(random.uniform(0.0, 14.0), 2)  # pH 0..14 (Decimal)
-    latitude = round(random.uniform(-90.0, 90.0), 6)
-    longetude = round(random.uniform(-180.0, 180.0), 6)
-    return umidade, temperatura, ph, latitude, longetude
-
-
-def vary_reading(prev, max_delta=1.0):
     """
-    Gera uma nova leitura a partir da anterior aplicando pequenas variações gaussianas.
-    prev: tuple (umidade, temperatura, ph, latitude, longetude)
+    Gera leitura totalmente aleatória com intervalos plausíveis.
+    Retorna tuple: (latitude, longitude, moisture, temperature, ph, ec, nitrogen, phosphorus, potassium)
     """
-    if prev is None:
-        return generate_random_reading()
+    latitude = round(random.uniform(-90.0, 90.0), 7)
+    longitude = round(random.uniform(-180.0, 180.0), 7)
+    moisture = round(random.uniform(0.0, 100.0), 2)  # %
+    temperature = round(random.uniform(-10.0, 50.0), 2)  # °C
+    ph = round(random.uniform(0.0, 14.0), 2)  # pH
+    ec = round(random.uniform(0.0, 5.0), 3)  # dS/m
+    nitrogen = round(random.uniform(0.0, 100.0), 3)  # unidade arbitrária
+    phosphorus = round(random.uniform(0.0, 100.0), 3)
+    potassium = round(random.uniform(0.0, 200.0), 3)
+    return (
+        latitude,
+        longitude,
+        moisture,
+        temperature,
+        ph,
+        ec,
+        nitrogen,
+        phosphorus,
+        potassium,
+    )
 
-    umidade_prev, temperatura_prev, ph_prev, lat_prev, lon_prev = prev
 
-    # Corrige mistura de Decimal e float convertendo para float antes da operação
-    temperatura_prev = float(temperatura_prev)
-    ph_prev = float(ph_prev)
-
-    umidade = min(100.0, max(0.0, umidade_prev + random.gauss(0, 1.5)))
-    temperatura = temperatura_prev + random.gauss(0, 0.3)
-    temperatura = float(decimal_round(temperatura, 2))
-    ph = ph_prev + random.gauss(0, 0.05)
-    ph = float(max(0.0, min(14.0, decimal_round(ph, 2))))
-    latitude = lat_prev + random.gauss(0, 0.00001)
-    longetude = lon_prev + random.gauss(0, 0.00001)
-
-    return round(umidade, 2), temperatura, ph, round(latitude, 6), round(longetude, 6)
-
-
-def insert_reading(conn, sensor_id, umidade, temperatura_c, ph, latitude, longetude):
+def vary_reading(prev: Tuple[float, ...]) -> Tuple[float, ...]:
     """
-    Insere uma linha na tabela sensorsdata.
-    Observação: a coluna recorded_at tem DEFAULT now(), então aqui não precisamos enviar timestamp.
+    Gera nova leitura a partir da anterior aplicando pequenas variações gaussianas.
+    prev: (latitude, longitude, moisture, temperature, ph, ec, nitrogen, phosphorus, potassium)
+    """
+    (
+        lat_prev,
+        lon_prev,
+        moisture_prev,
+        temp_prev,
+        ph_prev,
+        ec_prev,
+        n_prev,
+        p_prev,
+        k_prev,
+    ) = prev
+
+    latitude = round(lat_prev + random.gauss(0, 0.00001), 7)
+    longitude = round(lon_prev + random.gauss(0, 0.00001), 7)
+
+    moisture = round(max(0.0, min(100.0, moisture_prev + random.gauss(0, 0.5))), 2)
+    temperature = round(temp_prev + random.gauss(0, 0.15), 2)
+    ph = round(max(0.0, min(14.0, ph_prev + random.gauss(0, 0.02))), 2)
+    ec = round(max(0.0, ec_prev + random.gauss(0, 0.01)), 3)
+    nitrogen = round(max(0.0, n_prev + random.gauss(0, 0.05)), 3)
+    phosphorus = round(max(0.0, p_prev + random.gauss(0, 0.03)), 3)
+    potassium = round(max(0.0, k_prev + random.gauss(0, 0.1)), 3)
+
+    return (
+        latitude,
+        longitude,
+        moisture,
+        temperature,
+        ph,
+        ec,
+        nitrogen,
+        phosphorus,
+        potassium,
+    )
+
+
+def insert_reading(
+    conn,
+    sensor_name: str,
+    recorded_at: str,
+    latitude: float,
+    longitude: float,
+    moisture: float,
+    temperature: float,
+    ph: float,
+    ec: float,
+    nitrogen: float,
+    phosphorus: float,
+    potassium: float,
+) -> bool:
+    """
+    Executa o INSERT na tabela sensor_readings.
+    Retorna True se inseriu com sucesso, False caso contrário.
     """
     sql = """
-        INSERT INTO sensorsdata (sensor_id, umidade, temperatura_c, ph, latitude, longetude)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO sensor_readings (
+            sensor_name, recorded_at, latitude, longitude,
+            moisture, temperature, ph, ec, nitrogen, phosphorus, potassium
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
-    values = (sensor_id, umidade, float(temperatura_c), float(ph), latitude, longetude)
+    values = (
+        sensor_name,
+        recorded_at,
+        latitude,
+        longitude,
+        moisture,
+        temperature,
+        ph,
+        ec,
+        nitrogen,
+        phosphorus,
+        potassium,
+    )
     try:
         cur = conn.cursor()
         cur.execute(sql, values)
         conn.commit()
         cur.close()
         logging.info(
-            f"INSERT sensor={sensor_id} umidade={umidade} temp={temperatura_c} ph={ph} lat={latitude} lon={longetude}"
+            f"INSERT sensor={sensor_name} at={recorded_at} lat={latitude} lon={longitude} "
+            f"moisture={moisture} temp={temperature} pH={ph} EC={ec} N={nitrogen} P={phosphorus} K={potassium}"
         )
+        return True
     except Error as e:
         logging.error(f"Erro no INSERT: {e}")
-        # tenta rolar para trás se necessário
         try:
             conn.rollback()
         except Exception:
             pass
+        return False
 
 
 def handle_shutdown(signum, frame):
     global stop_requested
-    logging.info("Recebido sinal de término, finalizando...")
+    logging.info("Sinal de término recebido, finalizando...")
     stop_requested = True
 
 
@@ -144,40 +202,70 @@ def main():
         logging.error("Não foi possível conectar ao banco. Saindo.")
         return
 
-    last_reading = None
-
-    # Inicializa last_reading com um valor aleatório plausível para modo de variação
-    last_reading = generate_random_reading()
+    # Guarda a última leitura por sensor
+    last_readings: Dict[str, Tuple[float, ...]] = {}
+    for s in SENSOR_NAMES:
+        last_readings[s] = generate_random_reading()
 
     try:
         while not stop_requested:
-            sensor_id = random.choice(SENSOR_IDS)
+            for sensor in SENSOR_NAMES:
+                if random.random() < RANDOM_PROBABILITY:
+                    # leitura totalmente aleatória
+                    lat, lon, moisture, temp, ph, ec, n, p, k = (
+                        generate_random_reading()
+                    )
+                else:
+                    # pequena variação a partir da última leitura desse sensor
+                    lat, lon, moisture, temp, ph, ec, n, p, k = vary_reading(
+                        last_readings[sensor]
+                    )
 
-            if random.random() < RANDOM_PROBABILITY:
-                # leitura totalmente aleatória
-                umidade, temperatura, ph, lat, lon = generate_random_reading()
-            else:
-                # pequena variação a partir da última leitura
-                umidade, temperatura, ph, lat, lon = vary_reading(last_reading)
+                recorded_at = now_str()
 
-            # garante formatação correta (temperatura e ph como Decimal/float com 2 casas)
-            temperatura = decimal_round(temperatura, 2)
-            ph = decimal_round(ph, 2)
+                # tenta inserir; se falhar por conexão, tenta reconectar e reenviar uma vez
+                success = insert_reading(
+                    conn, sensor, recorded_at, lat, lon, moisture, temp, ph, ec, n, p, k
+                )
+                if not success:
+                    # tenta reconectar e reenviar uma vez
+                    try:
+                        if conn.is_connected():
+                            conn.close()
+                    except Exception:
+                        pass
+                    conn = connect_db()
+                    if conn:
+                        insert_reading(
+                            conn,
+                            sensor,
+                            recorded_at,
+                            lat,
+                            lon,
+                            moisture,
+                            temp,
+                            ph,
+                            ec,
+                            n,
+                            p,
+                            k,
+                        )
 
-            insert_reading(conn, sensor_id, umidade, temperatura, ph, lat, lon)
+                last_readings[sensor] = (lat, lon, moisture, temp, ph, ec, n, p, k)
 
-            # atualiza última leitura para o sensor (poderíamos ter last por sensor; aqui usamos único)
-            last_reading = (umidade, float(temperatura), float(ph), lat, lon)
+                # interrompe cedo se solicitado
+                if stop_requested:
+                    break
 
-            # espera N segundos
-            for _ in range(int(SLEEP_SECONDS * 10)):
+            # espera INTERVAL_SECONDS segundos (pequeno intervalo entre sensores não adicionado; o loop total faz ~INTERVAL_SECONDS)
+            for _ in range(int(INTERVAL_SECONDS * 10)):
                 if stop_requested:
                     break
                 time.sleep(0.1)
 
     finally:
         try:
-            if conn.is_connected():
+            if conn and conn.is_connected():
                 conn.close()
                 logging.info("Conexão com banco fechada.")
         except Exception:
